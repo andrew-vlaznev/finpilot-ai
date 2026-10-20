@@ -38,10 +38,16 @@ def fetch_market_prices() -> list[dict[str, str | float]]:
             status_code=504,
             detail="CoinGecko request timed out",
         ) from None
-    except HTTPError:
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            detail = f"CoinGecko authentication failed (HTTP {exc.code})"
+        elif exc.code == 429:
+            detail = "CoinGecko rate limit exceeded (HTTP 429)"
+        else:
+            detail = f"CoinGecko returned HTTP {exc.code}"
         raise HTTPException(
             status_code=502,
-            detail="CoinGecko returned an unsuccessful response",
+            detail=detail,
         ) from None
     except URLError as exc:
         if isinstance(exc.reason, (TimeoutError, socket.timeout)):

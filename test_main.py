@@ -2,7 +2,9 @@
 import io
 import json
 import socket
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -166,3 +168,35 @@ def test_fetch_market_prices_handles_invalid_response(monkeypatch):
         assert exc.detail == "CoinGecko returned an invalid response"
     else:
         raise AssertionError("Expected an invalid-response HTTP error")
+
+
+@pytest.mark.parametrize(
+    ("upstream_status", "expected_detail"),
+    [
+        (401, "CoinGecko authentication failed (HTTP 401)"),
+        (403, "CoinGecko authentication failed (HTTP 403)"),
+        (429, "CoinGecko rate limit exceeded (HTTP 429)"),
+        (500, "CoinGecko returned HTTP 500"),
+    ],
+)
+def test_market_reports_safe_coin_gecko_http_error(
+    monkeypatch, upstream_status, expected_detail
+):
+    monkeypatch.setenv("COINGECKO_API_KEY", "test-key")
+
+    def raise_http_error(*_args, **_kwargs):
+        raise HTTPError(
+            main.COINGECKO_URL,
+            upstream_status,
+            "upstream error containing secret-value",
+            {"Authorization": "secret-value"},
+            io.BytesIO(b"secret-value"),
+        )
+
+    monkeypatch.setattr(main, "urlopen", raise_http_error)
+
+    response = client.get("/market")
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": expected_detail}
+    assert "secret-value" not in response.text
