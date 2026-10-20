@@ -42,6 +42,13 @@ def test_market_data_for_btc():
     }
 
 
+def test_market_data_for_lowercase_btc():
+    response = client.get("/market?asset=btc")
+
+    assert response.status_code == 200
+    assert response.json()["assets"] == [{"symbol": "BTC", "price": 65000}]
+
+
 def test_market_data_for_eth():
     response = client.get("/market?asset=ETH")
 
