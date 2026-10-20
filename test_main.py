@@ -30,3 +30,30 @@ def test_market_data():
         "BTC": 65000,
         "ETH": 3200,
     }
+
+
+def test_market_data_for_btc():
+    response = client.get("/market?asset=BTC")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "market": "crypto",
+        "assets": [{"symbol": "BTC", "price": 65000}],
+    }
+
+
+def test_market_data_for_eth():
+    response = client.get("/market?asset=ETH")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "market": "crypto",
+        "assets": [{"symbol": "ETH", "price": 3200}],
+    }
+
+
+def test_market_data_for_unknown_asset():
+    response = client.get("/market?asset=XYZ")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Asset 'XYZ' was not found"}
