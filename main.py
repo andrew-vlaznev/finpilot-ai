@@ -1,7 +1,7 @@
 
 from fastapi import FastAPI, HTTPException
 
-app = FastAPI(title="Market Intelligence")
+app = FastAPI(title="FinPilot AI")
 
 MARKET_ASSETS = [
     {"symbol": "BTC", "price": 65000},
@@ -12,7 +12,7 @@ MARKET_ASSETS = [
 @app.get("/")
 def root():
     return {
-        "message": "Market Intelligence API is running!",
+        "message": "FinPilot AI API is running!",
         "status": "ok",
     }
 
