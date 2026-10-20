@@ -3,6 +3,11 @@ from fastapi import FastAPI, HTTPException
 
 app = FastAPI(title="Market Intelligence")
 
+MARKET_ASSETS = [
+    {"symbol": "BTC", "price": 65000},
+    {"symbol": "ETH", "price": 3200},
+]
+
 
 @app.get("/")
 def root():
@@ -19,10 +24,7 @@ def health_check():
 
 @app.get("/market")
 def market_data(asset: str | None = None):
-    assets = [
-        {"symbol": "BTC", "price": 65000},
-        {"symbol": "ETH", "price": 3200},
-    ]
+    assets = MARKET_ASSETS
 
     if asset is not None:
         assets = [item for item in assets if item["symbol"] == asset.upper()]
