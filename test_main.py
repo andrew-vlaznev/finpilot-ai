@@ -18,3 +18,15 @@ def test_root():
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_market_data():
+    response = client.get("/market")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["market"] == "crypto"
+    assert {asset["symbol"]: asset["price"] for asset in data["assets"]} == {
+        "BTC": 65000,
+        "ETH": 3200,
+    }
