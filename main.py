@@ -93,6 +93,19 @@ def fetch_market_prices() -> list[dict[str, str | float]]:
         ) from None
 
 
+def refresh_market_data(require_persistence: bool = True) -> dict[str, object]:
+    """Fetch prices and persist them, optionally keeping quotes on storage failure."""
+    assets = fetch_market_prices()
+    try:
+        updated_at = price_history.save_refresh(assets)
+    except sqlite3.Error:
+        if require_persistence:
+            raise
+        logger.warning("Could not save market quotes to SQLite price history")
+        updated_at = datetime.now(timezone.utc).isoformat()
+    return {"assets": assets, "updated_at": updated_at}
+
+
 @app.get("/")
 def root():
     return {
@@ -114,12 +127,9 @@ def market_data(asset: str | None = None):
             detail=f"Asset '{asset}' was not found",
         )
 
-    assets = fetch_market_prices()
-    updated_at = datetime.now(timezone.utc).isoformat()
-    try:
-        price_history.save_quotes(assets, updated_at)
-    except sqlite3.Error:
-        logger.warning("Could not save market quotes to SQLite price history")
+    refreshed = refresh_market_data(require_persistence=False)
+    assets = refreshed["assets"]
+    updated_at = refreshed["updated_at"]
 
     if asset is not None:
         assets = [item for item in assets if item["symbol"] == asset.upper()]
@@ -130,6 +140,35 @@ def market_data(asset: str | None = None):
         "source": "CoinGecko",
         "updated_at": updated_at,
     }
+
+
+@app.post("/market/refresh")
+def refresh_market():
+    try:
+        refreshed = refresh_market_data()
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Market refresh could not be saved",
+        ) from None
+
+    return {
+        "status": "updated",
+        "assets": refreshed["assets"],
+        "updated_at": refreshed["updated_at"],
+    }
+
+
+@app.get("/market/status")
+def market_status():
+    try:
+        status = price_history.get_status()
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Market status is temporarily unavailable",
+        ) from None
+    return status
 
 
 @app.get("/market/history/{symbol}")
@@ -150,3 +189,47 @@ def market_history(symbol: str, limit: int = Query(default=100, ge=1, le=500)):
         ) from None
 
     return {"symbol": normalized_symbol, "history": history}
+
+
+@app.get("/market/analysis/{symbol}")
+def market_analysis(symbol: str, limit: int = Query(default=100, ge=1, le=500)):
+    normalized_symbol = symbol.upper()
+    if normalized_symbol not in COINGECKO_IDS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Asset '{symbol}' was not found",
+        )
+
+    try:
+        history = price_history.get_history(normalized_symbol, limit)
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Price history is temporarily unavailable",
+        ) from None
+
+    if not history:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No price history found for asset '{normalized_symbol}'",
+        )
+
+    oldest = history[-1]
+    newest = history[0]
+    first_price = oldest["price_usd"]
+    last_price = newest["price_usd"]
+    change = last_price - first_price
+    change_percent = change / first_price * 100 if first_price != 0 else None
+
+    return {
+        "symbol": normalized_symbol,
+        "record_count": len(history),
+        "period_start": oldest["fetched_at"],
+        "period_end": newest["fetched_at"],
+        "first_price_usd": first_price,
+        "last_price_usd": last_price,
+        "min_price_usd": min(item["price_usd"] for item in history),
+        "max_price_usd": max(item["price_usd"] for item in history),
+        "change_usd": change,
+        "change_percent": change_percent,
+    }

@@ -144,13 +144,126 @@ def test_market_history_returns_404_for_unknown_symbol():
     assert response.json() == {"detail": "Asset 'XYZ' was not found"}
 
 
+def test_market_analysis_returns_summary_for_selected_history():
+    for price, day in ((100, "01"), (120, "02"), (90, "03")):
+        price_history.save_quotes(
+            [{"symbol": "BTC", "price": price}],
+            f"2026-01-{day}T00:00:00+00:00",
+        )
+
+    response = client.get("/market/analysis/btc")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "symbol": "BTC",
+        "record_count": 3,
+        "period_start": "2026-01-01T00:00:00+00:00",
+        "period_end": "2026-01-03T00:00:00+00:00",
+        "first_price_usd": 100,
+        "last_price_usd": 90,
+        "min_price_usd": 90,
+        "max_price_usd": 120,
+        "change_usd": -10,
+        "change_percent": -10,
+    }
+
+
+def test_market_analysis_uses_latest_records_within_limit():
+    for price, day in ((100, "01"), (125, "02"), (150, "03")):
+        price_history.save_quotes(
+            [{"symbol": "BTC", "price": price}],
+            f"2026-01-{day}T00:00:00+00:00",
+        )
+
+    response = client.get("/market/analysis/BTC?limit=2")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["record_count"] == 2
+    assert data["period_start"] == "2026-01-02T00:00:00+00:00"
+    assert data["first_price_usd"] == 125
+    assert data["last_price_usd"] == 150
+    assert data["change_usd"] == 25
+    assert data["change_percent"] == 20
+
+
+@pytest.mark.parametrize(
+    ("prices", "expected_change", "expected_percent"),
+    [([100, 125], 25, 25), ([100, 75], -25, -25)],
+)
+def test_market_analysis_calculates_rise_and_fall(
+    prices, expected_change, expected_percent
+):
+    for day, price in enumerate(prices, start=1):
+        price_history.save_quotes(
+            [{"symbol": "ETH", "price": price}],
+            f"2026-02-{day:02d}T00:00:00+00:00",
+        )
+
+    response = client.get("/market/analysis/ETH")
+
+    assert response.status_code == 200
+    assert response.json()["change_usd"] == expected_change
+    assert response.json()["change_percent"] == expected_percent
+
+
+def test_market_analysis_returns_null_percent_for_zero_initial_price():
+    price_history.save_quotes(
+        [{"symbol": "DOGE", "price": 0}], "2026-03-01T00:00:00+00:00"
+    )
+    price_history.save_quotes(
+        [{"symbol": "DOGE", "price": 2}], "2026-03-02T00:00:00+00:00"
+    )
+
+    response = client.get("/market/analysis/DOGE")
+
+    assert response.status_code == 200
+    assert response.json()["change_usd"] == 2
+    assert response.json()["change_percent"] is None
+
+
+def test_market_analysis_returns_404_for_empty_history():
+    response = client.get("/market/analysis/BTC")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "No price history found for asset 'BTC'"
+    }
+
+
+def test_market_analysis_returns_404_for_unknown_symbol():
+    response = client.get("/market/analysis/XYZ")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Asset 'XYZ' was not found"}
+
+
+@pytest.mark.parametrize("limit", [1, 500])
+def test_market_analysis_accepts_limit_boundaries(limit):
+    price_history.save_quotes(
+        [{"symbol": "SOL", "price": 10}], "2026-04-01T00:00:00+00:00"
+    )
+
+    response = client.get(f"/market/analysis/SOL?limit={limit}")
+
+    assert response.status_code == 200
+    assert response.json()["record_count"] == 1
+
+
+@pytest.mark.parametrize("limit", [0, 501])
+def test_market_analysis_rejects_limit_outside_range(limit):
+    response = client.get(f"/market/analysis/BTC?limit={limit}")
+
+    assert response.status_code == 422
+
+
 def test_market_still_returns_quotes_when_history_save_fails(monkeypatch, caplog):
     fake_prices(monkeypatch)
 
     def fail_to_save(*_args, **_kwargs):
         raise sqlite3.OperationalError("database failure at /private/secret-path")
 
-    monkeypatch.setattr(main.price_history, "save_quotes", fail_to_save)
+    monkeypatch.setattr(main.price_history, "save_refresh", fail_to_save)
 
     response = client.get("/market")
 
@@ -158,6 +271,103 @@ def test_market_still_returns_quotes_when_history_save_fails(monkeypatch, caplog
     assert len(response.json()["assets"]) == 4
     assert "Could not save market quotes to SQLite price history" in caplog.text
     assert "/private/secret-path" not in caplog.text
+
+
+def test_market_refresh_saves_quotes_and_returns_update_time(monkeypatch):
+    fake_prices(monkeypatch)
+
+    response = client.post("/market/refresh")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "updated"
+    assert data["assets"] == TEST_ASSETS
+    updated_at = datetime.fromisoformat(data["updated_at"])
+    assert updated_at.tzinfo is not None
+    assert updated_at.utcoffset() == timezone.utc.utcoffset(updated_at)
+    assert all(
+        records[0]["fetched_at"] == data["updated_at"]
+        for records in (
+            price_history.get_history(symbol, limit=1)
+            for symbol in ("BTC", "ETH", "SOL", "DOGE")
+        )
+    )
+
+
+def test_market_refresh_source_error_does_not_mark_success(monkeypatch):
+    def fail_to_fetch():
+        raise main.HTTPException(status_code=502, detail="Could not connect to CoinGecko")
+
+    monkeypatch.setattr(main, "fetch_market_prices", fail_to_fetch)
+
+    response = client.post("/market/refresh")
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Could not connect to CoinGecko"}
+    assert price_history.get_status() == {
+        "last_updated_at": None,
+        "history_records": 0,
+    }
+
+
+def test_market_refresh_storage_error_is_safe_and_does_not_mark_success(
+    monkeypatch, caplog
+):
+    fake_prices(monkeypatch)
+    price_history.get_status()
+    with sqlite3.connect(price_history.get_database_path()) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER reject_doge BEFORE INSERT ON price_history
+            WHEN NEW.symbol = 'DOGE'
+            BEGIN
+                SELECT RAISE(ABORT, '/private/secret-path');
+            END
+            """
+        )
+
+    response = client.post("/market/refresh")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Market refresh could not be saved"}
+    assert "/private/secret-path" not in response.text
+    assert "/private/secret-path" not in caplog.text
+    assert price_history.get_status() == {
+        "last_updated_at": None,
+        "history_records": 0,
+    }
+
+
+def test_market_status_reports_empty_database():
+    response = client.get("/market/status")
+
+    assert response.status_code == 200
+    assert response.json() == {"last_updated_at": None, "history_records": 0}
+
+
+def test_market_status_reports_successful_refresh(monkeypatch):
+    fake_prices(monkeypatch)
+    refresh_response = client.post("/market/refresh")
+
+    response = client.get("/market/status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "last_updated_at": refresh_response.json()["updated_at"],
+        "history_records": 4,
+    }
+
+
+def test_market_refresh_repeat_call_appends_history(monkeypatch):
+    fake_prices(monkeypatch)
+
+    first_response = client.post("/market/refresh")
+    second_response = client.post("/market/refresh")
+    status_response = client.get("/market/status")
+
+    assert first_response.status_code == second_response.status_code == 200
+    assert status_response.json()["history_records"] == 8
+    assert status_response.json()["last_updated_at"] == second_response.json()["updated_at"]
 
 
 def test_market_data_for_btc(monkeypatch):
