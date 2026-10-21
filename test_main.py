@@ -2,6 +2,7 @@
 import io
 import json
 import socket
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -25,6 +26,13 @@ def fake_prices(monkeypatch):
     monkeypatch.setattr(main, "fetch_market_prices", lambda: TEST_ASSETS.copy())
 
 
+def assert_market_metadata(data):
+    assert data["source"] == "CoinGecko"
+    updated_at = datetime.fromisoformat(data["updated_at"])
+    assert updated_at.tzinfo is not None
+    assert updated_at.utcoffset() == timezone.utc.utcoffset(updated_at)
+
+
 def test_health_check():
     response = client.get("/health")
 
@@ -46,6 +54,7 @@ def test_market_data(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["market"] == "crypto"
+    assert_market_metadata(data)
     assert {asset["symbol"]: asset["price"] for asset in data["assets"]} == {
         "BTC": 65000,
         "ETH": 3200,
@@ -59,10 +68,10 @@ def test_market_data_for_btc(monkeypatch):
     response = client.get("/market?asset=BTC")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "market": "crypto",
-        "assets": [{"symbol": "BTC", "price": 65000}],
-    }
+    data = response.json()
+    assert data["market"] == "crypto"
+    assert data["assets"] == [{"symbol": "BTC", "price": 65000}]
+    assert_market_metadata(data)
 
 
 def test_market_data_for_lowercase_btc(monkeypatch):
@@ -70,7 +79,9 @@ def test_market_data_for_lowercase_btc(monkeypatch):
     response = client.get("/market?asset=btc")
 
     assert response.status_code == 200
-    assert response.json()["assets"] == [{"symbol": "BTC", "price": 65000}]
+    data = response.json()
+    assert data["assets"] == [{"symbol": "BTC", "price": 65000}]
+    assert_market_metadata(data)
 
 
 def test_market_data_for_eth(monkeypatch):
@@ -78,10 +89,10 @@ def test_market_data_for_eth(monkeypatch):
     response = client.get("/market?asset=ETH")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "market": "crypto",
-        "assets": [{"symbol": "ETH", "price": 3200}],
-    }
+    data = response.json()
+    assert data["market"] == "crypto"
+    assert data["assets"] == [{"symbol": "ETH", "price": 3200}]
+    assert_market_metadata(data)
 
 
 def test_market_data_for_unknown_asset():

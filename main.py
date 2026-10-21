@@ -2,6 +2,7 @@ import json
 import math
 import os
 import socket
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -115,4 +116,6 @@ def market_data(asset: str | None = None):
     return {
         "market": "crypto",
         "assets": assets,
+        "source": "CoinGecko",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
