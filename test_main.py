@@ -257,6 +257,159 @@ def test_market_analysis_rejects_limit_outside_range(limit):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("prices", "expected_signal"),
+    [
+        ([100, 104], "BUY"),
+        ([100, 96], "SELL"),
+        ([100, 102], "HOLD"),
+        ([100, 103], "BUY"),
+        ([100, 97], "SELL"),
+    ],
+)
+def test_market_signals_classifies_price_changes(prices, expected_signal):
+    for day, price in enumerate(prices, start=1):
+        price_history.save_quotes(
+            [{"symbol": "BTC", "price": price}],
+            f"2026-05-{day:02d}T00:00:00+00:00",
+        )
+
+    response = client.get("/market/signals?threshold_percent=3")
+
+    assert response.status_code == 200
+    data = response.json()
+    btc_signal = next(item for item in data["signals"] if item["symbol"] == "BTC")
+    assert data["limit"] == 100
+    assert data["threshold_percent"] == 3
+    assert btc_signal["signal"] == expected_signal
+    assert btc_signal["first_price"] == prices[0]
+    assert btc_signal["last_price"] == prices[-1]
+    assert btc_signal["records_analyzed"] == 2
+    generated_at = datetime.fromisoformat(data["generated_at"])
+    assert generated_at.tzinfo is not None
+    assert generated_at.utcoffset() == timezone.utc.utcoffset(generated_at)
+
+
+def test_market_signals_returns_insufficient_data_for_empty_history():
+    response = client.get("/market/signals")
+
+    assert response.status_code == 200
+    assert len(response.json()["signals"]) == len(main.COINGECKO_IDS)
+    assert all(
+        item["signal"] == "INSUFFICIENT_DATA"
+        and item["first_price"] is None
+        and item["last_price"] is None
+        and item["change_percent"] is None
+        and item["records_analyzed"] == 0
+        for item in response.json()["signals"]
+    )
+
+
+def test_market_signals_returns_insufficient_data_for_one_record():
+    price_history.save_quotes(
+        [{"symbol": "BTC", "price": 500}], "2026-05-01T00:00:00+00:00"
+    )
+
+    response = client.get("/market/signals")
+
+    btc_signal = next(
+        item for item in response.json()["signals"] if item["symbol"] == "BTC"
+    )
+    assert response.status_code == 200
+    assert btc_signal == {
+        "symbol": "BTC",
+        "signal": "INSUFFICIENT_DATA",
+        "first_price": 500,
+        "last_price": 500,
+        "change_percent": None,
+        "records_analyzed": 1,
+    }
+
+
+def test_market_signals_handles_zero_initial_price():
+    price_history.save_quotes(
+        [{"symbol": "BTC", "price": 0}], "2026-05-01T00:00:00+00:00"
+    )
+    price_history.save_quotes(
+        [{"symbol": "BTC", "price": 500}], "2026-05-02T00:00:00+00:00"
+    )
+
+    response = client.get("/market/signals")
+
+    btc_signal = next(
+        item for item in response.json()["signals"] if item["symbol"] == "BTC"
+    )
+    assert response.status_code == 200
+    assert btc_signal["signal"] == "INSUFFICIENT_DATA"
+    assert btc_signal["first_price"] == 0
+    assert btc_signal["last_price"] == 500
+    assert btc_signal["change_percent"] is None
+    assert btc_signal["records_analyzed"] == 2
+
+
+@pytest.mark.parametrize("limit", [1, 1001])
+def test_market_signals_rejects_invalid_limit(limit):
+    response = client.get(f"/market/signals?limit={limit}")
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("threshold", [0, 100.1])
+def test_market_signals_rejects_invalid_threshold(threshold):
+    response = client.get(f"/market/signals?threshold_percent={threshold}")
+
+    assert response.status_code == 422
+
+
+def test_market_signals_processes_assets_independently():
+    price_history.save_quotes(
+        [{"symbol": "BTC", "price": 100}], "2026-06-01T00:00:00+00:00"
+    )
+    price_history.save_quotes(
+        [{"symbol": "BTC", "price": 110}], "2026-06-02T00:00:00+00:00"
+    )
+    price_history.save_quotes(
+        [{"symbol": "ETH", "price": 100}], "2026-06-01T00:00:00+00:00"
+    )
+    price_history.save_quotes(
+        [{"symbol": "ETH", "price": 90}], "2026-06-02T00:00:00+00:00"
+    )
+    price_history.save_quotes(
+        [{"symbol": "SOL", "price": 100}], "2026-06-02T00:00:00+00:00"
+    )
+
+    response = client.get("/market/signals?limit=2")
+
+    assert response.status_code == 200
+    by_symbol = {item["symbol"]: item for item in response.json()["signals"]}
+    assert by_symbol["BTC"]["signal"] == "BUY"
+    assert by_symbol["ETH"]["signal"] == "SELL"
+    assert by_symbol["SOL"]["signal"] == "INSUFFICIENT_DATA"
+    assert by_symbol["DOGE"]["signal"] == "INSUFFICIENT_DATA"
+
+
+def test_market_signals_uses_oldest_to_newest_order_and_does_not_write():
+    price_history.save_quotes(
+        [{"symbol": "BTC", "price": 110}], "2026-07-02T00:00:00+00:00"
+    )
+    price_history.save_quotes(
+        [{"symbol": "BTC", "price": 100}], "2026-07-01T00:00:00+00:00"
+    )
+    history_before = price_history.get_history("BTC", limit=10)
+
+    response = client.get("/market/signals?limit=2")
+
+    btc_signal = next(
+        item for item in response.json()["signals"] if item["symbol"] == "BTC"
+    )
+    history_after = price_history.get_history("BTC", limit=10)
+    assert response.status_code == 200
+    assert history_before == history_after
+    assert btc_signal["first_price"] == 100
+    assert btc_signal["last_price"] == 110
+    assert btc_signal["signal"] == "BUY"
+
+
 def test_market_still_returns_quotes_when_history_save_fails(monkeypatch, caplog):
     fake_prices(monkeypatch)
 

@@ -233,3 +233,59 @@ def market_analysis(symbol: str, limit: int = Query(default=100, ge=1, le=500)):
         "change_usd": change,
         "change_percent": change_percent,
     }
+
+
+@app.get("/market/signals")
+def market_signals(
+    limit: int = Query(default=100, ge=2, le=1000),
+    threshold_percent: float = Query(default=3.0, gt=0, le=100),
+):
+    signals = []
+    try:
+        for symbol in COINGECKO_IDS:
+            history = price_history.get_history(symbol, limit)
+            chronological_history = list(reversed(history))
+            records_analyzed = len(chronological_history)
+
+            if not chronological_history:
+                first_price = None
+                last_price = None
+                change_percent = None
+                signal = "INSUFFICIENT_DATA"
+            else:
+                first_price = chronological_history[0]["price_usd"]
+                last_price = chronological_history[-1]["price_usd"]
+                if records_analyzed < 2 or first_price == 0:
+                    change_percent = None
+                    signal = "INSUFFICIENT_DATA"
+                else:
+                    change_percent = (last_price - first_price) / first_price * 100
+                    if change_percent >= threshold_percent:
+                        signal = "BUY"
+                    elif change_percent <= -threshold_percent:
+                        signal = "SELL"
+                    else:
+                        signal = "HOLD"
+
+            signals.append(
+                {
+                    "symbol": symbol,
+                    "signal": signal,
+                    "first_price": first_price,
+                    "last_price": last_price,
+                    "change_percent": change_percent,
+                    "records_analyzed": records_analyzed,
+                }
+            )
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Price history is temporarily unavailable",
+        ) from None
+
+    return {
+        "limit": limit,
+        "threshold_percent": threshold_percent,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "signals": signals,
+    }

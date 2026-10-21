@@ -11,6 +11,7 @@ FinPilot AI is a Python pet project that combines QA automation practice with an
 - SQLite storage of fetched prices and their UTC timestamps.
 - `GET /market/history/{symbol}` returns the latest stored records first.
 - `GET /market/analysis/{symbol}` summarizes a selected window of saved prices, including its range and price change.
+- `GET /market/signals` classifies recent saved price changes as simple educational signals.
 - `POST /market/refresh` fetches and stores a new batch of prices; `GET /market/status` reports the last successful stored refresh and total history rows.
 - Pytest coverage using mocked CoinGecko responses and a temporary SQLite database.
 
@@ -150,6 +151,63 @@ curl "http://127.0.0.1:8000/market/analysis/BTC?limit=100"
 ```
 
 Supported symbols are case-insensitive. Unknown symbols and assets without stored history return 404; a `limit` outside 1–500 returns 422.
+
+### Educational market signals
+
+```bash
+curl "http://127.0.0.1:8000/market/signals?limit=100&threshold_percent=3"
+```
+
+The endpoint analyzes the latest records for BTC, ETH, SOL, and DOGE. `limit` defaults to 100 and must be from 2 to 1000. `threshold_percent` defaults to 3.0 and must be greater than 0 and no more than 100. It reads history only and does not add records.
+
+- `BUY`: the change from the oldest to the newest selected price is at least the positive threshold.
+- `SELL`: the change is at most the negative threshold.
+- `HOLD`: the change is between the thresholds.
+- `INSUFFICIENT_DATA`: fewer than two records are available, or a percentage cannot be calculated because the first price is zero.
+
+Signals are a simple educational heuristic and are not investment advice or a recommendation.
+
+```json
+{
+  "limit": 100,
+  "threshold_percent": 3.0,
+  "generated_at": "2026-10-21T12:00:00+00:00",
+  "signals": [
+    {
+      "symbol": "BTC",
+      "signal": "BUY",
+      "first_price": 64000.0,
+      "last_price": 66000.0,
+      "change_percent": 3.125,
+      "records_analyzed": 4
+    },
+    {
+      "symbol": "ETH",
+      "signal": "HOLD",
+      "first_price": 3200.0,
+      "last_price": 3220.0,
+      "change_percent": 0.625,
+      "records_analyzed": 4
+    },
+    {
+      "symbol": "SOL",
+      "signal": "SELL",
+      "first_price": 150.0,
+      "last_price": 145.0,
+      "change_percent": -3.3333333333333335,
+      "records_analyzed": 4
+    },
+    {
+      "symbol": "DOGE",
+      "signal": "INSUFFICIENT_DATA",
+      "first_price": null,
+      "last_price": null,
+      "change_percent": null,
+      "records_analyzed": 0
+    }
+  ]
+}
+```
 
 ### Refresh market data
 
