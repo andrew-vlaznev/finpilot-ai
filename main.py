@@ -1,15 +1,20 @@
 import json
+import logging
 import math
 import os
+import sqlite3
 import socket
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+
+import price_history
 
 app = FastAPI(title="FinPilot AI")
+logger = logging.getLogger(__name__)
 
 COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
 COINGECKO_IDS = {
@@ -110,6 +115,12 @@ def market_data(asset: str | None = None):
         )
 
     assets = fetch_market_prices()
+    updated_at = datetime.now(timezone.utc).isoformat()
+    try:
+        price_history.save_quotes(assets, updated_at)
+    except sqlite3.Error:
+        logger.warning("Could not save market quotes to SQLite price history")
+
     if asset is not None:
         assets = [item for item in assets if item["symbol"] == asset.upper()]
 
@@ -117,5 +128,25 @@ def market_data(asset: str | None = None):
         "market": "crypto",
         "assets": assets,
         "source": "CoinGecko",
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": updated_at,
     }
+
+
+@app.get("/market/history/{symbol}")
+def market_history(symbol: str, limit: int = Query(default=100, ge=1, le=500)):
+    normalized_symbol = symbol.upper()
+    if normalized_symbol not in COINGECKO_IDS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Asset '{symbol}' was not found",
+        )
+
+    try:
+        history = price_history.get_history(normalized_symbol, limit)
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Price history is temporarily unavailable",
+        ) from None
+
+    return {"symbol": normalized_symbol, "history": history}
