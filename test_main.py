@@ -16,6 +16,8 @@ client = TestClient(app)
 TEST_ASSETS = [
     {"symbol": "BTC", "price": 65000},
     {"symbol": "ETH", "price": 3200},
+    {"symbol": "SOL", "price": 150},
+    {"symbol": "DOGE", "price": 0.2},
 ]
 
 
@@ -47,6 +49,8 @@ def test_market_data(monkeypatch):
     assert {asset["symbol"]: asset["price"] for asset in data["assets"]} == {
         "BTC": 65000,
         "ETH": 3200,
+        "SOL": 150,
+        "DOGE": 0.2,
     }
 
 
@@ -109,12 +113,17 @@ def test_market_returns_service_unavailable_without_api_key(monkeypatch):
 def test_fetch_market_prices_uses_demo_api_and_maps_response(monkeypatch):
     monkeypatch.setenv("COINGECKO_API_KEY", "test-key")
     response_body = json.dumps(
-        {"bitcoin": {"usd": 65000}, "ethereum": {"usd": 3200}}
+        {
+            "bitcoin": {"usd": 65000},
+            "ethereum": {"usd": 3200},
+            "solana": {"usd": 150},
+            "dogecoin": {"usd": 0.2},
+        }
     ).encode()
 
     def fake_urlopen(request, timeout):
         assert request.full_url.startswith(main.COINGECKO_URL)
-        assert "bitcoin%2Cethereum" in request.full_url
+        assert "ids=bitcoin%2Cethereum%2Csolana%2Cdogecoin" in request.full_url
         assert "vs_currencies=usd" in request.full_url
         assert request.get_header("X-cg-demo-api-key") == "test-key"
         assert timeout == main.REQUEST_TIMEOUT_SECONDS

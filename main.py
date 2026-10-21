@@ -11,7 +11,12 @@ from fastapi import FastAPI, HTTPException
 app = FastAPI(title="FinPilot AI")
 
 COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price"
-COINGECKO_IDS = {"BTC": "bitcoin", "ETH": "ethereum"}
+COINGECKO_IDS = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "DOGE": "dogecoin",
+}
 REQUEST_TIMEOUT_SECONDS = 5
 
 
