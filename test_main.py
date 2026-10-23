@@ -54,6 +54,201 @@ def test_root():
     assert response.json()["status"] == "ok"
 
 
+def test_create_portfolio_position_normalizes_symbol_and_returns_creation_time():
+    response = client.post(
+        "/portfolio/positions",
+        json={"symbol": "btc", "quantity": 0.25, "purchase_price": 60000},
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["id"] > 0
+    assert data["symbol"] == "BTC"
+    assert data["quantity"] == 0.25
+    assert data["purchase_price"] == 60000
+    created_at = datetime.fromisoformat(data["created_at"])
+    assert created_at.utcoffset() == timezone.utc.utcoffset(created_at)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"symbol": "BTC", "quantity": 0, "purchase_price": 10},
+        {"symbol": "BTC", "quantity": -1, "purchase_price": 10},
+        {"symbol": "BTC", "quantity": 1, "purchase_price": 0},
+        {"symbol": "BTC", "quantity": 1, "purchase_price": -10},
+        {"symbol": "XYZ", "quantity": 1, "purchase_price": 10},
+    ],
+)
+def test_create_portfolio_position_rejects_invalid_data(payload):
+    response = client.post("/portfolio/positions", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_portfolio_summary_is_empty_without_requesting_prices(monkeypatch):
+    def unexpected_fetch():
+        raise AssertionError("An empty portfolio does not need market prices")
+
+    monkeypatch.setattr(main, "fetch_market_prices", unexpected_fetch)
+
+    response = client.get("/portfolio")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "positions": [],
+        "total_purchase_value": 0,
+        "total_current_value": 0,
+        "total_profit_loss": 0,
+        "total_profit_loss_percent": None,
+        "positions_count": 0,
+        "generated_at": response.json()["generated_at"],
+    }
+    generated_at = datetime.fromisoformat(response.json()["generated_at"])
+    assert generated_at.utcoffset() == timezone.utc.utcoffset(generated_at)
+
+
+def test_portfolio_summary_calculates_position_and_totals_once(monkeypatch):
+    client.post(
+        "/portfolio/positions",
+        json={"symbol": "BTC", "quantity": "0.25", "purchase_price": "60000"},
+    )
+    client.post(
+        "/portfolio/positions",
+        json={"symbol": "ETH", "quantity": "2", "purchase_price": "3000"},
+    )
+    price_history.save_quotes(
+        [{"symbol": "BTC", "price": 50000}], "2026-08-01T00:00:00+00:00"
+    )
+    history_before = price_history.get_history("BTC", 10)
+    fetch_calls = 0
+
+    def fake_fetch_prices():
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return [
+            {"symbol": "BTC", "price": 65000},
+            {"symbol": "ETH", "price": 3200},
+        ]
+
+    monkeypatch.setattr(main, "fetch_market_prices", fake_fetch_prices)
+
+    response = client.get("/portfolio")
+
+    assert response.status_code == 200
+    assert fetch_calls == 1
+    data = response.json()
+    assert data["positions_count"] == 2
+    assert data["total_purchase_value"] == pytest.approx(21000)
+    assert data["total_current_value"] == pytest.approx(22650)
+    assert data["total_profit_loss"] == pytest.approx(1650)
+    assert data["total_profit_loss_percent"] == pytest.approx(1650 / 21000 * 100)
+    by_symbol = {position["symbol"]: position for position in data["positions"]}
+    assert by_symbol["BTC"]["purchase_value"] == pytest.approx(15000)
+    assert by_symbol["BTC"]["current_value"] == pytest.approx(16250)
+    assert by_symbol["BTC"]["profit_loss"] == pytest.approx(1250)
+    assert by_symbol["BTC"]["profit_loss_percent"] == pytest.approx(1250 / 15000 * 100)
+    assert by_symbol["ETH"]["current_value"] == pytest.approx(6400)
+    assert by_symbol["ETH"]["profit_loss"] == pytest.approx(400)
+    assert price_history.get_history("BTC", 10) == history_before
+
+
+def test_portfolio_summary_uses_available_prices_for_totals(monkeypatch):
+    client.post(
+        "/portfolio/positions",
+        json={"symbol": "BTC", "quantity": 1, "purchase_price": 100},
+    )
+    client.post(
+        "/portfolio/positions",
+        json={"symbol": "ETH", "quantity": 2, "purchase_price": 50},
+    )
+    monkeypatch.setattr(
+        main,
+        "fetch_market_prices",
+        lambda: [{"symbol": "BTC", "price": 120}],
+    )
+
+    response = client.get("/portfolio")
+
+    data = response.json()
+    by_symbol = {position["symbol"]: position for position in data["positions"]}
+    assert response.status_code == 200
+    assert by_symbol["BTC"]["current_value"] == 120
+    assert by_symbol["ETH"]["current_price"] is None
+    assert by_symbol["ETH"]["current_value"] is None
+    assert by_symbol["ETH"]["profit_loss"] is None
+    assert by_symbol["ETH"]["profit_loss_percent"] is None
+    assert data["total_purchase_value"] == 200
+    assert data["total_current_value"] == 120
+    assert data["total_profit_loss"] == 20
+    assert data["total_profit_loss_percent"] == 20
+
+
+def test_portfolio_summary_handles_market_price_failure_safely(monkeypatch, caplog):
+    client.post(
+        "/portfolio/positions",
+        json={"symbol": "BTC", "quantity": 1, "purchase_price": 100},
+    )
+
+    def fail_to_fetch():
+        raise main.HTTPException(
+            status_code=502,
+            detail="CoinGecko error containing secret-value",
+        )
+
+    monkeypatch.setattr(main, "fetch_market_prices", fail_to_fetch)
+
+    response = client.get("/portfolio")
+
+    assert response.status_code == 200
+    assert "secret-value" not in response.text
+    assert "secret-value" not in caplog.text
+    data = response.json()
+    assert data["positions"][0]["current_price"] is None
+    assert data["positions"][0]["current_value"] is None
+    assert data["total_purchase_value"] == 100
+    assert data["total_current_value"] == 0
+    assert data["total_profit_loss"] == 0
+    assert data["total_profit_loss_percent"] is None
+
+
+def test_get_and_delete_portfolio_position_only_affect_target(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "fetch_market_prices",
+        lambda: [{"symbol": "BTC", "price": 100}],
+    )
+    first = client.post(
+        "/portfolio/positions",
+        json={"symbol": "BTC", "quantity": 1, "purchase_price": 100},
+    ).json()
+    second = client.post(
+        "/portfolio/positions",
+        json={"symbol": "BTC", "quantity": 2, "purchase_price": 90},
+    ).json()
+    price_history.save_quotes(
+        [{"symbol": "BTC", "price": 80}], "2026-08-02T00:00:00+00:00"
+    )
+    history_before = price_history.get_history("BTC", 10)
+
+    get_response = client.get(f"/portfolio/positions/{first['id']}")
+    delete_response = client.delete(f"/portfolio/positions/{first['id']}")
+    remaining = client.get("/portfolio")
+
+    assert get_response.status_code == 200
+    assert get_response.json()["id"] == first["id"]
+    assert delete_response.status_code == 204
+    assert [position["id"] for position in remaining.json()["positions"]] == [
+        second["id"]
+    ]
+    assert price_history.get_history("BTC", 10) == history_before
+
+
+def test_get_or_delete_unknown_portfolio_position_returns_404():
+    assert client.get("/portfolio/positions/999").status_code == 404
+    assert client.delete("/portfolio/positions/999").status_code == 404
+
+
 def test_market_data(monkeypatch):
     fake_prices(monkeypatch)
     response = client.get("/market")

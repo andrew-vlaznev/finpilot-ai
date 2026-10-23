@@ -14,6 +14,7 @@ FinPilot AI is a Python pet project that combines QA automation practice with an
 - `GET /market/indicators` calculates SMA and Wilder RSI from saved price history.
 - `GET /market/signals` classifies recent saved price changes as simple educational signals.
 - `POST /market/refresh` fetches and stores a new batch of prices; `GET /market/status` reports the last successful stored refresh and total history rows.
+- A SQLite-backed educational portfolio stores individual crypto purchase positions and calculates their current value and profit or loss.
 - Pytest coverage using mocked CoinGecko responses and a temporary SQLite database.
 
 ## Technology
@@ -271,6 +272,67 @@ curl http://127.0.0.1:8000/market/status
 ```
 
 Before the first successful refresh, `last_updated_at` is `null` and `history_records` is `0`.
+
+### Educational portfolio
+
+Create a position with `POST /portfolio/positions`:
+
+```bash
+curl -X POST http://127.0.0.1:8000/portfolio/positions \
+  -H 'Content-Type: application/json' \
+  -d '{"symbol":"BTC","quantity":0.25,"purchase_price":60000}'
+```
+
+Each request creates a separate position; purchases of the same asset are not combined. Symbols are normalized to uppercase and must be BTC, ETH, SOL, or DOGE. Quantity and purchase price must be positive.
+
+```json
+{
+  "id": 1,
+  "symbol": "BTC",
+  "quantity": 0.25,
+  "purchase_price": 60000,
+  "created_at": "2026-10-21T12:00:00+00:00"
+}
+```
+
+Use `GET /portfolio` for a valuation summary, `GET /portfolio/positions/{position_id}` to read one position, and `DELETE /portfolio/positions/{position_id}` to remove one. Deleting a position does not affect market history or other positions.
+
+```bash
+curl http://127.0.0.1:8000/portfolio
+curl http://127.0.0.1:8000/portfolio/positions/1
+curl -X DELETE http://127.0.0.1:8000/portfolio/positions/1
+```
+
+The summary fetches all supported market prices in one request and does not write those quotes to market history. If price retrieval fails or an asset price is missing, that position's current price, current value, and profit/loss fields are `null`. `total_purchase_value` includes every position. `total_current_value` and `total_profit_loss` include only positions with available prices; the total percentage uses only the purchase value of those priced positions, or is `null` when none can be valued. An empty portfolio returns zero totals, zero positions, and a `null` total percentage.
+
+Example summary for one position:
+
+```json
+{
+  "positions": [
+    {
+      "id": 1,
+      "symbol": "BTC",
+      "quantity": 0.25,
+      "purchase_price": 60000,
+      "purchase_value": 15000,
+      "current_price": 65000,
+      "current_value": 16250,
+      "profit_loss": 1250,
+      "profit_loss_percent": 8.333333333333334,
+      "created_at": "2026-10-21T12:00:00+00:00"
+    }
+  ],
+  "total_purchase_value": 15000,
+  "total_current_value": 16250,
+  "total_profit_loss": 1250,
+  "total_profit_loss_percent": 8.333333333333334,
+  "positions_count": 1,
+  "generated_at": "2026-10-21T12:00:05+00:00"
+}
+```
+
+The portfolio is an educational local feature. These endpoints do not implement authentication or protect one user's positions from another user with access to the service. They do not place trades or connect to an exchange.
 
 ## Tests
 

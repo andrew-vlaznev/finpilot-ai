@@ -5,13 +5,16 @@ import os
 import sqlite3
 import socket
 from datetime import datetime, timezone
+from decimal import Decimal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 
 import price_history
+import portfolio
 
 app = FastAPI(title="FinPilot AI")
 logger = logging.getLogger(__name__)
@@ -24,6 +27,12 @@ COINGECKO_IDS = {
     "DOGE": "dogecoin",
 }
 REQUEST_TIMEOUT_SECONDS = 5
+
+
+class PortfolioPositionRequest(BaseModel):
+    symbol: str = Field(min_length=1)
+    quantity: Decimal = Field(gt=0, allow_inf_nan=False)
+    purchase_price: Decimal = Field(gt=0, allow_inf_nan=False)
 
 
 def fetch_market_prices() -> list[dict[str, str | float]]:
@@ -117,6 +126,133 @@ def root():
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+
+@app.post("/portfolio/positions", status_code=201)
+def create_portfolio_position(position: PortfolioPositionRequest):
+    symbol = position.symbol.strip().upper()
+    if symbol not in COINGECKO_IDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Asset '{position.symbol}' is not supported",
+        )
+
+    try:
+        return portfolio.create_position(
+            symbol,
+            position.quantity,
+            position.purchase_price,
+        )
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Portfolio is temporarily unavailable",
+        ) from None
+
+
+@app.get("/portfolio")
+def portfolio_summary():
+    try:
+        positions = portfolio.list_positions()
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Portfolio is temporarily unavailable",
+        ) from None
+
+    current_prices: dict[str, Decimal] = {}
+    if positions:
+        try:
+            current_prices = {
+                item["symbol"]: Decimal(str(item["price"]))
+                for item in fetch_market_prices()
+            }
+        except HTTPException:
+            logger.warning("Could not fetch current market prices for portfolio")
+
+    total_purchase_value = Decimal("0")
+    total_current_value = Decimal("0")
+    total_profit_loss = Decimal("0")
+    valued_purchase_value = Decimal("0")
+    summary_positions = []
+
+    for position in positions:
+        quantity = position["quantity"]
+        purchase_price = position["purchase_price"]
+        purchase_value = quantity * purchase_price
+        total_purchase_value += purchase_value
+
+        current_price = current_prices.get(position["symbol"])
+        if current_price is None:
+            current_value = None
+            profit_loss = None
+            profit_loss_percent = None
+        else:
+            current_value = quantity * current_price
+            profit_loss = current_value - purchase_value
+            profit_loss_percent = profit_loss / purchase_value * 100
+            total_current_value += current_value
+            total_profit_loss += profit_loss
+            valued_purchase_value += purchase_value
+
+        summary_positions.append(
+            {
+                **position,
+                "purchase_value": purchase_value,
+                "current_price": current_price,
+                "current_value": current_value,
+                "profit_loss": profit_loss,
+                "profit_loss_percent": profit_loss_percent,
+            }
+        )
+
+    total_profit_loss_percent = (
+        total_profit_loss / valued_purchase_value * 100
+        if valued_purchase_value != 0
+        else None
+    )
+    return {
+        "positions": summary_positions,
+        "total_purchase_value": total_purchase_value,
+        "total_current_value": total_current_value,
+        "total_profit_loss": total_profit_loss,
+        "total_profit_loss_percent": total_profit_loss_percent,
+        "positions_count": len(positions),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/portfolio/positions/{position_id}")
+def get_portfolio_position(position_id: int):
+    try:
+        position = portfolio.get_position(position_id)
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Portfolio is temporarily unavailable",
+        ) from None
+    if position is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Portfolio position '{position_id}' was not found",
+        )
+    return position
+
+
+@app.delete("/portfolio/positions/{position_id}", status_code=204)
+def delete_portfolio_position(position_id: int):
+    try:
+        deleted = portfolio.delete_position(position_id)
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Portfolio is temporarily unavailable",
+        ) from None
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Portfolio position '{position_id}' was not found",
+        )
 
 
 @app.get("/market")
