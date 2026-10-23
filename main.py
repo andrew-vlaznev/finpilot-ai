@@ -235,6 +235,64 @@ def market_analysis(symbol: str, limit: int = Query(default=100, ge=1, le=500)):
     }
 
 
+def calculate_rsi(prices: list[float], period: int = 14) -> float | None:
+    """Calculate Wilder RSI, returning None until a full period is available."""
+    if len(prices) < period + 1:
+        return None
+
+    changes = [current - previous for previous, current in zip(prices, prices[1:])]
+    gains = [max(change, 0) for change in changes]
+    losses = [max(-change, 0) for change in changes]
+    average_gain = sum(gains[:period]) / period
+    average_loss = sum(losses[:period]) / period
+
+    for gain, loss in zip(gains[period:], losses[period:]):
+        average_gain = (average_gain * (period - 1) + gain) / period
+        average_loss = (average_loss * (period - 1) + loss) / period
+
+    if average_loss == 0:
+        return 50.0 if average_gain == 0 else 100.0
+    if average_gain == 0:
+        return 0.0
+    relative_strength = average_gain / average_loss
+    return 100 - (100 / (1 + relative_strength))
+
+
+@app.get("/market/indicators")
+def market_indicators(
+    symbol: str = Query(...),
+    limit: int = Query(default=14, ge=2, le=1000),
+):
+    normalized_symbol = symbol.upper()
+    if normalized_symbol not in COINGECKO_IDS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Asset '{symbol}' was not found",
+        )
+
+    try:
+        newest_first = price_history.get_history(normalized_symbol, limit)
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Price history is temporarily unavailable",
+        ) from None
+
+    chronological = list(reversed(newest_first))
+    prices = [record["price_usd"] for record in chronological]
+    records_analyzed = len(prices)
+    sma = sum(prices) / records_analyzed if records_analyzed >= 2 else None
+
+    return {
+        "symbol": normalized_symbol,
+        "records_analyzed": records_analyzed,
+        "sma": sma,
+        "rsi": calculate_rsi(prices),
+        "rsi_period": 14,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.get("/market/signals")
 def market_signals(
     limit: int = Query(default=100, ge=2, le=1000),
