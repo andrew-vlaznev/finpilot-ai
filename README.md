@@ -11,6 +11,7 @@ FinPilot AI is a Python pet project that combines QA automation practice with an
 - SQLite storage of fetched prices and their UTC timestamps.
 - `GET /market/history/{symbol}` returns the latest stored records first.
 - `GET /market/analysis/{symbol}` summarizes a selected window of saved prices, including its range and price change.
+- `GET /market/indicators` calculates SMA and Wilder RSI from saved price history.
 - `GET /market/signals` classifies recent saved price changes as simple educational signals.
 - `POST /market/refresh` fetches and stores a new batch of prices; `GET /market/status` reports the last successful stored refresh and total history rows.
 - Pytest coverage using mocked CoinGecko responses and a temporary SQLite database.
@@ -151,6 +152,30 @@ curl "http://127.0.0.1:8000/market/analysis/BTC?limit=100"
 ```
 
 Supported symbols are case-insensitive. Unknown symbols and assets without stored history return 404; a `limit` outside 1–500 returns 422.
+
+### Technical indicators
+
+```bash
+curl "http://127.0.0.1:8000/market/indicators?symbol=BTC&limit=14"
+```
+
+`symbol` must be one of BTC, ETH, SOL, or DOGE. `limit` defaults to 14 and accepts values from 2 to 1000. The endpoint reads the latest selected records in chronological order and does not fetch or save prices.
+
+- **SMA** is the arithmetic mean of the available selected prices. It is `null` when fewer than two records are available.
+- **RSI** uses Wilder's smoothing with a 14-change period. It is `null` until at least 15 prices are available. RSI is 100 when there are gains and no losses, 0 when there are losses and no gains, and 50 when prices are unchanged throughout.
+
+The timestamp reflects when the indicator response was generated. These indicators are educational analysis, not a guarantee of future market movement or investment advice.
+
+```json
+{
+  "symbol": "BTC",
+  "records_analyzed": 14,
+  "sma": 67500.25,
+  "rsi": null,
+  "rsi_period": 14,
+  "updated_at": "2026-10-21T12:00:00+00:00"
+}
+```
 
 ### Educational market signals
 

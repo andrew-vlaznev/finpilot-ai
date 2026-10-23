@@ -222,6 +222,105 @@ def test_market_analysis_returns_null_percent_for_zero_initial_price():
     assert response.json()["change_percent"] is None
 
 
+def save_btc_prices(prices):
+    for index, price in enumerate(prices):
+        price_history.save_quotes(
+            [{"symbol": "BTC", "price": price}],
+            f"2026-01-{index + 1:02d}T00:00:00+00:00",
+        )
+
+
+def test_market_indicators_sma_and_chronological_latest_window():
+    save_btc_prices([1, 2, 3, 4])
+
+    response = client.get("/market/indicators?symbol=btc&limit=3")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["symbol"] == "BTC"
+    assert data["records_analyzed"] == 3
+    assert data["sma"] == 3
+    assert data["rsi"] is None
+    assert datetime.fromisoformat(data["updated_at"]).utcoffset() == timezone.utc.utcoffset(datetime.now(timezone.utc))
+
+
+def test_market_indicators_reorders_history_chronologically():
+    for day in range(15, 0, -1):
+        price_history.save_quotes(
+            [{"symbol": "BTC", "price": 100 + day}],
+            f"2026-01-{day:02d}T00:00:00+00:00",
+        )
+
+    response = client.get("/market/indicators?symbol=BTC&limit=15")
+
+    assert response.status_code == 200
+    assert response.json()["sma"] == 108
+    assert response.json()["rsi"] == 100
+
+
+def test_market_indicators_rsi_wilder_with_gains_and_losses():
+    prices = [100, 102, 101, 103, 102, 104, 103, 105, 104, 106, 105, 107, 106, 108, 110]
+    save_btc_prices(prices)
+
+    data = client.get("/market/indicators?symbol=BTC&limit=15").json()
+
+    # 8 gains of 2 and 6 losses of 1 in the initial 14 changes.
+    assert data["rsi"] == pytest.approx(100 - 100 / (1 + (16 / 6)))
+
+
+def test_market_indicators_rsi_uses_wilder_smoothing_after_initial_period():
+    prices = [
+        100, 102, 101, 103, 102, 104, 103, 105,
+        104, 106, 105, 107, 106, 108, 110, 109,
+    ]
+    save_btc_prices(prices)
+
+    data = client.get("/market/indicators?symbol=BTC&limit=16").json()
+
+    # Seed averages are 16/14 and 6/14; the last -1 move is Wilder-smoothed.
+    assert data["rsi"] == pytest.approx(69.33333333333333)
+
+
+@pytest.mark.parametrize(("prices", "expected"), [([100 + i for i in range(15)], 100), ([100 - i for i in range(15)], 0), ([100] * 15, 50)])
+def test_market_indicators_rsi_edge_cases(prices, expected):
+    save_btc_prices(prices)
+
+    data = client.get("/market/indicators?symbol=BTC&limit=15").json()
+
+    assert data["rsi"] == expected
+
+
+@pytest.mark.parametrize("prices", [[], [100], [100, 101], list(range(100, 114))])
+def test_market_indicators_insufficient_history(prices):
+    save_btc_prices(prices)
+
+    data = client.get("/market/indicators?symbol=BTC&limit=100").json()
+
+    assert data["records_analyzed"] == len(prices)
+    assert data["sma"] == (sum(prices) / len(prices) if len(prices) >= 2 else None)
+    assert data["rsi"] is None
+
+
+def test_market_indicators_does_not_fetch_or_write(monkeypatch):
+    save_btc_prices([1, 2, 3])
+    before = price_history.get_history("BTC", 10)
+
+    def unexpected_fetch():
+        raise AssertionError("Indicators must not fetch prices")
+
+    monkeypatch.setattr(main, "fetch_market_prices", unexpected_fetch)
+    response = client.get("/market/indicators?symbol=BTC")
+
+    assert response.status_code == 200
+    assert price_history.get_history("BTC", 10) == before
+
+
+def test_market_indicators_reject_unknown_symbol_and_bad_limits():
+    assert client.get("/market/indicators?symbol=XYZ").status_code == 404
+    assert client.get("/market/indicators?symbol=BTC&limit=1").status_code == 422
+    assert client.get("/market/indicators?symbol=BTC&limit=1001").status_code == 422
+
+
 def test_market_analysis_returns_404_for_empty_history():
     response = client.get("/market/analysis/BTC")
 
