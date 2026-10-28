@@ -47,6 +47,21 @@ def test_health_check():
     assert response.json() == {"status": "healthy"}
 
 
+def test_frontend_cors_allows_local_vite_origin():
+    response = client.options(
+        "/market",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "access-control-allow-credentials" not in response.headers
+
+
 def test_root():
     response = client.get("/")
 

@@ -25,6 +25,40 @@ FinPilot AI is a Python pet project that combines QA automation practice with an
 - Pytest
 - Git and GitHub
 
+## Interactive web interface
+
+The React and TypeScript dashboard in `frontend/` connects to the existing API. It shows live quotes, saved price history, SMA/RSI, educational market signals, and the portfolio. Portfolio positions can be added and removed. The AI Assistant panel is a placeholder for future work and does not generate responses.
+
+Run the backend in one terminal:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+export COINGECKO_API_KEY="your-demo-api-key"
+python -m uvicorn main:app --reload
+```
+
+Run the frontend in another terminal:
+
+```bash
+cd frontend
+npm ci
+cp -n .env.example .env.local
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173). The frontend reads `VITE_API_BASE_URL` from `frontend/.env.local`; the example points to `http://127.0.0.1:8000`. Vite variables are public browser configuration, so never put API keys or other secrets in them. The CoinGecko key belongs in the backend environment only.
+
+Frontend checks:
+
+```bash
+npm test
+npm run build
+```
+
+The local API allows browser requests from `localhost:5173` and `127.0.0.1:5173` only.
+
 ## Setup and local run
 
 Create and activate a virtual environment on macOS or Linux:
